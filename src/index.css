@@ -1,0 +1,307 @@
+@import "tailwindcss";
+
+/*
+ * The look follows the EP-2350 guide itself: white ground, hairline rules,
+ * one orange, everything lowercase, technical data in mono.
+ */
+@theme {
+  --font-sans: "Archivo", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --color-paper: #ffffff;
+  --color-panel: #f6f5f3;
+  --color-ink: #111110;
+  --color-mute: #6e6a64;
+  --color-rule: #d9d6d1;
+  --color-rule-soft: #e8e5e1;
+  --color-orange: #ff4b00;
+  --color-orange-soft: #fff0e9;
+  --color-pass: #1f7a4d;
+  --color-pass-soft: #e9f4ee;
+
+  /* The four families of effect block, for their glyphs only. Orange stays
+   * reserved for the things that move. */
+  --color-filter: #1d6fd6;
+  --color-space: #0f8a7a;
+  --color-pitch: #7a4fd8;
+  --color-drive: #c2257a;
+}
+
+@layer theme {
+  /* How strongly the bank's bit-art shows in the margins. */
+  :root { --wall: 0.16; }
+  :root:not([data-theme="light"]) {
+    @media (prefers-color-scheme: dark) {
+      --wall: 0.2;
+      --color-paper: #0e0d0c;
+      --color-panel: #181614;
+      --color-ink: #f3f1ee;
+      --color-mute: #98928a;
+      --color-rule: #2e2b27;
+      --color-rule-soft: #221f1c;
+      --color-orange: #ff5f1f;
+      --color-orange-soft: #2a1409;
+      --color-pass: #4fb883;
+      --color-pass-soft: #0f2419;
+      --color-filter: #6aa7ff;
+      --color-space: #3fc4b0;
+      --color-pitch: #b394ff;
+      --color-drive: #ff5fae;
+    }
+  }
+  /* Fancy: warm charcoal and five muted accents (terracotta, sand, sage,
+   * slate, cream), with a little motion. Terracotta takes orange's job.
+   * The look is after "Loading, Beautifully" in miaai-lab's gallery of 100
+   * Claude Opus 5.5 pages (miaai-lab.github.io/Claude-Opus-5.5-100-HTML-Files).
+   * That repo has no licence, so none of its code is used here: this CSS is
+   * written fresh to the same palette and mood. */
+  :root[data-theme="fancy"] {
+    color-scheme: dark;
+    --wall: 0.2;
+    --color-paper: #141414;
+    --color-panel: #1b1a19;
+    --color-ink: #f4f1de;
+    --color-mute: #a19d8c;
+    --color-rule: #34322e;
+    --color-rule-soft: #242321;
+    --color-orange: #e07a5f;
+    --color-orange-soft: #2e1d18;
+    --color-pass: #81b29a;
+    --color-pass-soft: #18241e;
+    --color-filter: #8f94c4;
+    --color-space: #81b29a;
+    --color-pitch: #c3a3d6;
+    --color-drive: #f2cc8f;
+  }
+  :root[data-theme="dark"] {
+    --wall: 0.2;
+    --color-paper: #0e0d0c;
+    --color-panel: #181614;
+    --color-ink: #f3f1ee;
+    --color-mute: #98928a;
+    --color-rule: #2e2b27;
+    --color-rule-soft: #221f1c;
+    --color-orange: #ff5f1f;
+    --color-orange-soft: #2a1409;
+    --color-pass: #4fb883;
+    --color-pass-soft: #0f2419;
+    --color-filter: #6aa7ff;
+    --color-space: #3fc4b0;
+    --color-pitch: #b394ff;
+    --color-drive: #ff5fae;
+  }
+}
+
+/* html keeps no background of its own: body's paper then becomes the canvas,
+ * and the wallpaper's fixed layers at z-index -1 paint above it. */
+html { color-scheme: light dark; }
+
+body {
+  margin: 0;
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-orange);
+  outline-offset: 2px;
+}
+
+/*
+ * Dressed like TDMDNE: the sampler sits centred in a hairline box on the paper,
+ * and the bank's bit-art is tiled faintly down the margins either side, masked
+ * out of the middle (±--half, then a 60px fade) so it never sits behind a
+ * control or the text. --half covers the page's 1120px column. Two layers so a
+ * new picture crossfades in.
+ */
+.bench { --half: 570px; }
+.wall {
+  position: fixed; inset: 0; z-index: -1; pointer-events: none;
+  background-position: center top; background-size: 224px;
+  opacity: 0; transition: opacity 0.8s;
+  --m: linear-gradient(to right, #000 calc(50% - var(--half) - 60px), transparent calc(50% - var(--half)),
+    transparent calc(50% + var(--half)), #000 calc(50% + var(--half) + 60px));
+  -webkit-mask-image: var(--m);
+  mask-image: var(--m);
+}
+.wall.on { opacity: var(--wall); }
+
+/* A guide step's "where →" link outlines the control it means, briefly. */
+.lookhere { outline: 2px solid var(--color-orange) !important; outline-offset: 2px; }
+
+/* The repeated furniture, so the markup stays readable. */
+/*
+ * Sized against the EP-2350 guide itself, which sets its body around 14px and
+ * its headings near 20. A tool UI is denser than a manual, but 10px labels were
+ * squinting territory — these are the two utilities most of the app is built
+ * from, so they carry the whole scale.
+ */
+@utility label {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+  letter-spacing: 0.045em;
+  color: var(--color-mute);
+}
+
+@utility data {
+  font-family: var(--font-mono);
+  font-size: 13.5px;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Range inputs, restyled to look like the device's own hardware. */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 22px;
+  background: transparent;
+  cursor: pointer;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 3px;
+  background: var(--color-rule);
+}
+input[type="range"]::-moz-range-track {
+  height: 3px;
+  background: var(--color-rule);
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 4px;
+  height: 18px;
+  margin-top: -7px;
+  background: var(--color-orange);
+  border: 0;
+  border-radius: 0;
+}
+input[type="range"]::-moz-range-thumb {
+  width: 4px;
+  height: 18px;
+  background: var(--color-orange);
+  border: 0;
+  border-radius: 0;
+}
+
+/* The thinking dots: a plain ellipsis until the fancy theme makes them hop. */
+.hop { display: inline-flex; gap: 0.14em; margin-left: 0.1em; }
+.hop i { width: 0.2em; height: 0.2em; border-radius: 50%; background: currentColor; align-self: flex-end; margin-bottom: 0.25em; }
+
+/* The verdict's tick, drawn in by the fancy theme. */
+.ink-tick { width: 1em; height: 1em; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+
+:root[data-theme="fancy"] body {
+  background:
+    radial-gradient(60% 50% at 12% 0%, rgb(224 122 95 / 0.08), transparent 70%),
+    radial-gradient(50% 40% at 95% 8%, rgb(129 178 154 / 0.06), transparent 70%),
+    radial-gradient(circle at 1px 1px, rgb(244 241 222 / 0.05) 1px, transparent 1.4px) 0 0 / 16px 16px,
+    var(--color-paper);
+  background-attachment: fixed;
+}
+:root[data-theme="fancy"] .border,
+:root[data-theme="fancy"] .bg-orange { border-radius: 9px; }
+:root[data-theme="fancy"] .border.bg-paper,
+:root[data-theme="fancy"] .border.bg-panel { border-radius: 14px; }
+/* White on terracotta is under 3:1; charcoal on it clears 6. */
+:root[data-theme="fancy"] .bg-orange.text-white { color: #141414; }
+:root[data-theme="fancy"] .pack-card {
+  background: linear-gradient(180deg, #1b1a19, #171615);
+  transition: transform 0.35s cubic-bezier(0.3, 1.4, 0.5, 1), box-shadow 0.35s, border-color 0.35s;
+}
+:root[data-theme="fancy"] .pack-card:hover {
+  transform: translateY(-3px);
+  border-color: rgb(224 122 95 / 0.45);
+  box-shadow: 0 22px 50px -24px rgb(224 122 95 / 0.45);
+}
+:root[data-theme="fancy"] .bg-pass-soft,
+:root[data-theme="fancy"] .bg-orange-soft { border-radius: 8px; }
+:root[data-theme="fancy"] input[type="range"]::-webkit-slider-thumb { width: 14px; height: 14px; margin-top: -5.5px; border-radius: 50%; box-shadow: 0 0 0 4px rgb(224 122 95 / 0.18); }
+:root[data-theme="fancy"] input[type="range"]::-moz-range-thumb { width: 14px; height: 14px; border-radius: 50%; box-shadow: 0 0 0 4px rgb(224 122 95 / 0.18); }
+:root[data-theme="fancy"] .hop i { animation: hop 1.3s cubic-bezier(0.3, 0, 0.3, 1) infinite; background: #e07a5f; }
+:root[data-theme="fancy"] .hop i:nth-child(2) { animation-delay: 0.14s; background: #f2cc8f; }
+:root[data-theme="fancy"] .hop i:nth-child(3) { animation-delay: 0.28s; background: #81b29a; }
+@keyframes hop { 0%, 60%, 100% { transform: translateY(0); } 30% { transform: translateY(-0.35em); } }
+:root[data-theme="fancy"] .ink-tick { animation: tick-pop 0.5s 0.35s cubic-bezier(0.3, 1.6, 0.5, 1) backwards; }
+:root[data-theme="fancy"] .ink-tick path { stroke-dasharray: 1; stroke-dashoffset: 1; animation: ink 0.45s 0.1s ease-out forwards; }
+@keyframes ink { to { stroke-dashoffset: 0; } }
+@keyframes tick-pop { from { transform: scale(0.6); } }
+
+/* Fancy, continued: the rest of the bench's moments. Every hook class here
+ * is inert in light and dark. */
+@keyframes rise { from { opacity: 0; transform: translateY(8px); } }
+:root[data-theme="fancy"] main > section { animation: rise 0.6s cubic-bezier(0.2, 0.7, 0.2, 1) backwards; }
+:root[data-theme="fancy"] main > section:nth-child(2) { animation-delay: 0.08s; }
+:root[data-theme="fancy"] main > section:nth-child(3) { animation-delay: 0.16s; }
+
+/* The wordmark in the palette, and a gnome that sways when you point at him. */
+.brand-mark { display: inline-flex; }
+:root[data-theme="fancy"] .wordmark {
+  background: linear-gradient(90deg, #e07a5f, #f2cc8f);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+:root[data-theme="fancy"] .brand-mark .gnome { transform-box: fill-box; transform-origin: 50% 10%; }
+:root[data-theme="fancy"] .brand-mark:hover .gnome { animation: sway 1.4s ease-in-out; }
+@keyframes sway { 25% { transform: rotate(9deg); } 60% { transform: rotate(-6deg); } 85% { transform: rotate(2deg); } }
+
+/* Tabs: the underline grows out from the middle, terracotta into sand. */
+:root[data-theme="fancy"] .tab { position: relative; border-bottom-color: transparent; transition: color 0.25s; }
+:root[data-theme="fancy"] .tab::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: -2px; height: 2px; border-radius: 2px;
+  background: linear-gradient(90deg, #e07a5f, #f2cc8f);
+  transform: scaleX(0); transition: transform 0.4s cubic-bezier(0.3, 1.3, 0.5, 1);
+}
+:root[data-theme="fancy"] .tab.border-orange::after { transform: scaleX(1); }
+
+/* The chain: blocks rise in one after another, and a signal falls down the
+ * spine the way the audio does. */
+:root[data-theme="fancy"] .chain-row { animation: rise 0.45s cubic-bezier(0.2, 0.7, 0.2, 1) backwards; animation-delay: calc(var(--i, 0) * 60ms); }
+:root[data-theme="fancy"] .spine::after {
+  content: ""; position: absolute; left: 4px; top: 0; width: 7px; height: 7px; border-radius: 50%;
+  background: #f2cc8f; box-shadow: 0 0 10px 2px rgb(224 122 95 / 0.7);
+  animation: fall 3.2s cubic-bezier(0.45, 0, 0.55, 1) infinite; pointer-events: none;
+}
+@keyframes fall {
+  0% { top: 0; opacity: 0; }
+  10% { opacity: 1; }
+  88% { opacity: 1; }
+  100% { top: calc(100% - 7px); opacity: 0; }
+}
+
+/* Listen breathes while it is on. */
+:root[data-theme="fancy"] .listen-btn { transition: box-shadow 0.3s; }
+:root[data-theme="fancy"] .listen-btn.bg-orange { animation: breathe 2.4s ease-in-out infinite; }
+@keyframes breathe {
+  0% { box-shadow: 0 0 0 0 rgb(224 122 95 / 0.55); }
+  70%, 100% { box-shadow: 0 0 0 10px rgb(224 122 95 / 0); }
+}
+
+/* The handle fills like a gauge as you squeeze. */
+:root[data-theme="fancy"] .fill-track::-webkit-slider-runnable-track {
+  height: 4px; border-radius: 4px;
+  background: linear-gradient(90deg, #e07a5f, #f2cc8f var(--fill, 0%), var(--color-rule) var(--fill, 0%));
+}
+:root[data-theme="fancy"] .fill-track::-webkit-slider-thumb { margin-top: -5px; }
+:root[data-theme="fancy"] .fill-track::-moz-range-progress { height: 4px; border-radius: 4px; background: linear-gradient(90deg, #e07a5f, #f2cc8f); }
+
+/* An error arrives with a nudge, once. */
+:root[data-theme="fancy"] .verdict-error { animation: nudge 0.45s cubic-bezier(0.3, 0, 0.3, 1); }
+@keyframes nudge { 20% { transform: translateX(-4px); } 45% { transform: translateX(3px); } 70% { transform: translateX(-1.5px); } }
+
+/* Buttons give under the finger. */
+:root[data-theme="fancy"] button { transition: transform 0.15s, background-color 0.25s, border-color 0.25s, color 0.25s; }
+:root[data-theme="fancy"] button:active:not(:disabled) { transform: scale(0.97); }
+
+/* Dialogs rise over a blurred, darkened bench. */
+:root[data-theme="fancy"] .fixed.inset-0.z-50 { background: rgb(10 10 10 / 0.55); backdrop-filter: blur(6px); }
+:root[data-theme="fancy"] .fixed.inset-0.z-50 > div { animation: rise 0.4s cubic-bezier(0.2, 0.7, 0.2, 1); box-shadow: 0 30px 80px -30px rgb(224 122 95 / 0.35); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+  :root[data-theme="fancy"] .ink-tick path { stroke-dashoffset: 0; }
+}
