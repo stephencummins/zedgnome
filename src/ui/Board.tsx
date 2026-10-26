@@ -250,7 +250,7 @@ export function Board() {
           <a href="https://micgnome.stephen8n.com" target="_blank" rel="noreferrer noopener" className="underline hover:text-orange"
             title="Mic Gnome: patch bay for the TE EP-2350 mic">mic gnome</a>
           <a href="https://padgnome.stephen8n.com" target="_blank" rel="noreferrer noopener" className="underline hover:text-orange"
-            title="Pad Gnome: samples onto the pads of a Roland SP-404SX">pad gnome</a>
+            title="Pad Gnome: put samples on the pads of an SP-404SX">pad gnome</a>
           <a href="https://subgnome.stephen8n.com" target="_blank" rel="noreferrer noopener" className="underline hover:text-orange"
             title="Sub Gnome: a sub-bass synth with everything that moves it">sub gnome</a>
           <a href="https://tdmdne.stephen8n.com" target="_blank" rel="noreferrer noopener" className="underline hover:text-orange"
