@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { decodeAiff } from '../aiff'
-import { freeName, inspect, lastImport, memoryDir, readSlotFile, writeKit } from '../disk'
+import { type MemoryDir, freeName, inspect, lastImport, memoryDir, readSlotFile, writeKit } from '../disk'
 import { PER_FRAME, encodeDrumKit, kitSlices, readMeta, toPosition } from '../drumkit'
 import { type Sound, frames, kitFrames, layOut, render, toSound } from '../kit'
 import { KEYS, MAX_FRAMES, kitFileName, leadingNumber } from '../layout'
@@ -109,8 +109,8 @@ describe('drum kit aiff', () => {
   })
 })
 
-async function opz() {
-  const root = memoryDir('OP-Z')
+async function opz(opts: { appleDouble?: boolean } = {}) {
+  const root = memoryDir('OP-Z', opts)
   const packs = (await root.dir('samplepacks', true))!
   for (const t of ['1-kick', '2-snare', '3-perc', '4-fx', '5-bass']) {
     const d = (await packs.dir(t, true))!
@@ -118,6 +118,8 @@ async function opz() {
   }
   return root
 }
+const slotOf = async (root: MemoryDir, track: string, slot: string) =>
+  (await (await (await root.dir('samplepacks'))!.dir(track))!.dir(slot)) as MemoryDir
 
 describe('disk', () => {
   it('refuses a disk with no samplepacks folder', async () => {
@@ -135,7 +137,8 @@ describe('disk', () => {
     expect(r.ok).toBe(true)
     expect(r.tracks.map((t) => t.folder)).toEqual(['1-kick', '2-snare', '3-perc', '4-fx'])
     expect(r.slots).toHaveLength(40)
-    expect(r.slots.find((s) => s.track === 1 && s.slot === 3)!.files).toEqual([{ name: 'boom.aif', bytes: 10, kind: 'kit' }])
+    expect(r.slots.find((s) => s.track === 1 && s.slot === 3)!.files).toEqual([{ name: 'boom.aif', bytes: 10 }])
+    expect(r.slots.filter((s) => s.hidden)).toEqual([])
   })
   it('accepts the samplepacks folder itself being picked', async () => {
     const root = await opz()
@@ -143,37 +146,62 @@ describe('disk', () => {
   })
   it('replaces what is in the slot, keeping the old kit in the page', async () => {
     const root = await opz()
-    const slot = (await (await (await root.dir('samplepacks'))!.dir('2-snare'))!.dir('05'))! as ReturnType<typeof memoryDir>
-    await slot.write('old.aif', new Uint8Array([1, 2, 3]))
+    await (await slotOf(root, '2-snare', '05')).write('old.aif', new Uint8Array([1, 2, 3]))
     const data = new Uint8Array([9, 9, 9, 9])
     const res = await writeKit(root, 2, 5, 'new.aif', data)
     expect(res.path).toBe('samplepacks/2-snare/05/new.aif')
     expect(res.replaced).toEqual([{ name: 'old.aif', data: new Uint8Array([1, 2, 3]) }])
-    expect([...slot.files.keys()]).toEqual(['new.aif'])
+    expect([...(await slotOf(root, '2-snare', '05')).files.keys()]).toEqual(['new.aif'])
     expect(await readSlotFile(root, 2, 5, 'new.aif')).toEqual(data)
   })
-  it('tells kits on the disk from kits already inside the op-z and factory plugs', async () => {
+  it('hides ~ markers the way chrome does', async () => {
     const root = await opz()
-    const kick = (await (await root.dir('samplepacks'))!.dir('1-kick'))!
-    await (await kick.dir('01'))!.write('~13.engine', new Uint8Array(0))
-    await (await kick.dir('02'))!.write('~mine.aif', new Uint8Array(0))
-    await (await kick.dir('02'))!.write('._~mine.aif', new Uint8Array(4))
-    const r = await inspect(root)
-    expect(r.slots[0].files).toEqual([{ name: '~13.engine', bytes: 0, kind: 'factory' }])
-    expect(r.slots[1].files).toEqual([{ name: '~mine.aif', bytes: 0, kind: 'imported' }])
+    const slot = await slotOf(root, '1-kick', '02')
+    slot.files.set('~TeKicks.aif', new Uint8Array(0))
+    expect(await slot.entries()).toEqual([])
+    expect(await slot.read('~TeKicks.aif')).toBeUndefined()
+    await expect(slot.remove('~TeKicks.aif')).rejects.toThrow(/not allowed/)
   })
-  it('clears markers and macos litter, and never reuses a name another slot declares', async () => {
+  it('finds slots holding a marker it cannot list, and leaves empty slots in place', async () => {
     const root = await opz()
-    const kick = (await (await root.dir('samplepacks'))!.dir('1-kick'))!
-    await (await kick.dir('01'))!.write('~kit.aif', new Uint8Array(0))
-    const slot = (await kick.dir('02'))! as ReturnType<typeof memoryDir>
-    await slot.write('~13.engine', new Uint8Array(0))
-    await slot.write('._old.aif', new Uint8Array(4))
+    ;(await slotOf(root, '1-kick', '02')).files.set('~TeKicks.aif', new Uint8Array(0))
+    ;(await slotOf(root, '4-fx', '10')).files.set('~-887013277', new Uint8Array(0))
+    const r = await inspect(root)
+    expect(r.slots.filter((s) => s.hidden).map((s) => `${s.track}/${s.slot}`)).toEqual(['1/2', '4/10'])
+    expect(r.slots.find((s) => s.track === 1 && s.slot === 2)!.files).toEqual([])
+    expect(r.slots.every((s) => s.folder)).toBe(true)
+    expect(await slotOf(root, '1-kick', '03')).toBeDefined()
+  })
+  it('clears macos litter from an otherwise empty slot to see into it', async () => {
+    const root = await opz()
+    const slot = await slotOf(root, '3-perc', '09')
+    await slot.write('._gone.aif', new Uint8Array(4))
+    await slot.write('.DS_Store', new Uint8Array(4))
+    const r = await inspect(root)
+    expect(r.slots.find((s) => s.track === 3 && s.slot === 9)!.hidden).toBe(false)
+    expect((await slotOf(root, '3-perc', '09')).files.size).toBe(0)
+  })
+  it('will not write into a slot holding a marker, and puts back a kit it moved', async () => {
+    const root = await opz()
+    ;(await slotOf(root, '1-kick', '02')).files.set('~TeKicks.aif', new Uint8Array(0))
+    await expect(writeKit(root, 1, 2, 'kit.aif', new Uint8Array([1]))).rejects.toThrow(/can't show.*nothing was written/)
+    expect([...(await slotOf(root, '1-kick', '02')).files.keys()]).toEqual(['~TeKicks.aif'])
+
+    const both = await slotOf(root, '1-kick', '01')
+    both.files.set('~AlainKicks.aif', new Uint8Array(0))
+    await both.write('my-kit.aif', new Uint8Array([7, 7]))
+    await expect(writeKit(root, 1, 1, 'kit.aif', new Uint8Array([1]))).rejects.toThrow(/nothing was written/)
+    expect(both.files.get('my-kit.aif')).toEqual(new Uint8Array([7, 7]))
+    expect(both.files.has('kit.aif')).toBe(false)
+  })
+  it('clears macos litter, leaves none of its own, and never reuses a name another slot uses', async () => {
+    const root = await opz({ appleDouble: true })
+    await (await slotOf(root, '1-kick', '01')).write('kit.aif', new Uint8Array(1))
+    await (await slotOf(root, '1-kick', '02')).write('.DS_Store', new Uint8Array(4))
     const res = await writeKit(root, 1, 2, 'kit.aif', new Uint8Array([1, 2]))
     expect(res.written).toBe('kit-2.aif')
     expect(res.replaced).toEqual([])
-    expect(res.cleared.map((c) => c.name)).toEqual(['~13.engine'])
-    expect([...slot.files.keys()]).toEqual(['kit-2.aif'])
+    expect([...(await slotOf(root, '1-kick', '02')).files.keys()]).toEqual(['kit-2.aif'])
   })
   it('names around clashes, keeping within 24 characters', () => {
     expect(freeName(['other.aif'], 'kit.aif')).toBe('kit.aif')

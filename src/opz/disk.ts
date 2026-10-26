@@ -9,21 +9,27 @@
  *   2. the OP-Z has 24 MB in all, so backups do not go on it: the kit being
  *      replaced is read into the page first, checked, and handed back as a
  *      download
- *   3. one kit per slot, so anything else in the slot is part of what is
- *      replaced
+ *   3. one kit per slot, so the kit in the slot is what is replaced, and a
+ *      slot holding something we cannot see is never written to
  *
- * What the disk shows is the device's export, not a plain folder (from
- * ioma8/opz-firmware-notes, read off a unit's import log):
+ * What the disk shows is the device's export, not a plain folder (from TE's
+ * how_to_import.txt on the disk, and a real unit):
  *
- *   - a slot holding a factory kit shows a 0-byte `~13.engine` marker naming
- *     its plug, so it is not empty
- *   - once a kit is imported, the device replaces the `.aif` with a 0-byte
- *     `~name.aif` marker; the audio is inside the OP-Z from then on and cannot
- *     be read back off the disk
- *   - a pack declared twice under one name (a real file and a marker, or two
- *     markers) makes the device clear both slots, so every kit we write gets
- *     a name no other slot uses
+ *   - a 0-byte `~name.aif` is a slot playing a pack held somewhere else: a
+ *     factory kit inside the OP-Z, or the same pack as another slot. Synth
+ *     tracks use `~13.engine`. Your own kits stay on the disk as full .aif
+ *     files after import
+ *   - only one pack per slot folder is imported; the rest are rejected
+ *   - a pack declared twice under one name makes the device clear both slots
+ *     (ioma8/opz-firmware-notes), so every kit we write gets a name no other
+ *     slot uses
  *   - `import.log` at the disk root records the last import, line by line
+ *
+ * Chrome's File System Access API will not list or open a name that starts
+ * or ends with `~` (base::i18n::IsFilenameLegal), so those slots list as
+ * empty. Deleting a folder still fails on anything inside it, listed or not,
+ * so a slot that lists as empty only counts as empty once deleting it works,
+ * and it is made again straight away.
  */
 import { DRUM_TRACKS, SAMPLE_DIR, SLOTS, leadingNumber } from './layout'
 
@@ -34,13 +40,13 @@ export interface Dir {
   read(name: string): Promise<Uint8Array | undefined>
   write(name: string, data: Uint8Array): Promise<void>
   remove(name: string): Promise<void>
+  /** Delete an empty folder. False, with nothing changed, if anything is in it, even names entries() leaves out. */
+  rmdir(name: string): Promise<boolean>
 }
 
 export interface SlotFile {
   name: string
   bytes: number
-  /** kit: audio on the disk · imported: a kit already inside the OP-Z · factory: a factory plug's marker */
-  kind: 'kit' | 'imported' | 'factory'
 }
 
 export interface DiskSlot {
@@ -48,7 +54,14 @@ export interface DiskSlot {
   slot: number
   /** The slot folder's name as it is on the disk, if it exists. */
   folder?: string
+  /** Kits on the disk, with their audio. */
   files: SlotFile[]
+  /**
+   * Something is in the folder that we cannot show: nearly always a ~ marker
+   * for a factory kit or a pack another slot plays. We cannot read or remove
+   * it, so the slot is not written to.
+   */
+  hidden: boolean
 }
 
 export interface DiskReport {
@@ -63,15 +76,10 @@ export interface DiskReport {
   importLog: string[]
 }
 
-const isAif = (name: string) => /\.aiff?$/i.test(name) && !name.startsWith('.')
-/** Everything in a slot that declares what it plays; ._ files are macOS's AppleDouble litter. */
-const isSlotEntry = (name: string) => isAif(name) || (name.startsWith('~') && /\.(aiff?|engine)$/i.test(name))
-const isLitter = (name: string) => name.startsWith('._')
-
-export function slotFile(name: string, bytes: number): SlotFile {
-  const kind = name.startsWith('~') ? (/\.engine$/i.test(name) ? 'factory' : 'imported') : 'kit'
-  return { name, bytes, kind }
-}
+/** A kit with its audio on the disk. */
+const isAif = (name: string) => /\.aiff?$/i.test(name) && !/^[.~]/.test(name)
+/** macOS's AppleDouble files and Finder's folder settings: nothing the OP-Z needs. */
+const isLitter = (name: string) => name.startsWith('._') || name === '.DS_Store'
 
 /** A kit's name as the device knows it: markers carry a leading ~. */
 const packName = (file: string) => file.replace(/^~/, '').toLowerCase()
@@ -116,6 +124,24 @@ async function slotDir(track: Dir, n: number, create = false): Promise<Dir | und
   return create ? track.dir(String(n).padStart(2, '0'), true) : undefined
 }
 
+/** The slot folder made again if it was empty; undefined if anything is in it. Deleting is the only look past the listing. */
+async function emptied(track: Dir, folder: string): Promise<Dir | undefined> {
+  return (await track.rmdir(folder)) ? track.dir(folder, true) : undefined
+}
+
+/** A slot's kits, and whether anything else we cannot show is in it. */
+async function look(track: Dir, d: Dir): Promise<Pick<DiskSlot, 'files' | 'hidden'>> {
+  const listed = await d.entries()
+  const files: SlotFile[] = []
+  for (const e of listed) if (e.kind === 'file' && isAif(e.name)) files.push({ name: e.name, bytes: (await d.read(e.name))?.byteLength ?? 0 })
+  if (files.length) return { files, hidden: false }
+  // Nothing listed but litter: clear it so the folder can be tested.
+  const rest = listed.filter((e) => !(e.kind === 'file' && isLitter(e.name)))
+  if (rest.length) return { files, hidden: true }
+  for (const e of listed) await d.remove(e.name)
+  return { files, hidden: !(await emptied(track, d.name)) }
+}
+
 export async function inspect(root: Dir): Promise<DiskReport> {
   const empty = { tracks: [], slots: [], rejected: [], importLog: [] }
   const packs = await findSamplepacks(root)
@@ -133,13 +159,7 @@ export async function inspect(root: Dir): Promise<DiskReport> {
     tracks.push({ n, folder: t?.name })
     for (let s = 1; s <= SLOTS; s++) {
       const d = t && (await slotDir(t, s))
-      const files: SlotFile[] = []
-      if (d) {
-        for (const e of await d.entries()) {
-          if (e.kind === 'file' && isSlotEntry(e.name)) files.push(slotFile(e.name, (await d.read(e.name))?.byteLength ?? 0))
-        }
-      }
-      slots.push({ track: n, slot: s, folder: d?.name, files })
+      slots.push({ track: n, slot: s, folder: d?.name, ...(t && d ? await look(t, d) : { files: [], hidden: false }) })
     }
   }
   if (!tracks.some((t) => t.folder)) {
@@ -180,8 +200,6 @@ export interface WriteResult {
   path: string
   /** Kits whose audio was on the disk, kept in the page so they can be saved. */
   replaced: { name: string; data: Uint8Array }[]
-  /** Markers removed: kits already inside the OP-Z, and factory plugs. Nothing to save. */
-  cleared: SlotFile[]
   madeSlot: boolean
 }
 
@@ -201,35 +219,39 @@ export async function writeKit(root: Dir, track: number, slot: number, name: str
     for (let s = 1; td && s <= SLOTS; s++) {
       if (n === track && s === slot) continue
       const sd = await slotDir(td, s)
-      if (sd) taken.push(...(await sd.entries()).filter((e) => e.kind === 'file' && isSlotEntry(e.name)).map((e) => e.name))
+      if (sd) taken.push(...(await sd.entries()).filter((e) => e.kind === 'file' && isAif(e.name)).map((e) => e.name))
     }
   }
   const written = freeName(taken, name)
-  const d = existed ?? (await slotDir(t, slot, true))!
+  let d = existed ?? (await slotDir(t, slot, true))!
 
   // Keep what is being replaced before touching anything.
   const replaced: WriteResult['replaced'] = []
-  const cleared: SlotFile[] = []
   const litter: string[] = []
   for (const e of await d.entries()) {
     if (e.kind !== 'file') continue
-    if (isLitter(e.name)) {
-      litter.push(e.name)
-      continue
+    if (isLitter(e.name)) litter.push(e.name)
+    else if (isAif(e.name)) {
+      const old = await d.read(e.name)
+      if (!old) throw new Error(`could not read ${e.name} to keep a copy — nothing was changed.`)
+      replaced.push({ name: e.name, data: old })
     }
-    if (!isSlotEntry(e.name)) continue
-    const old = await d.read(e.name)
-    if (!old) throw new Error(`could not read ${e.name} to keep a copy — nothing was changed.`)
-    const f = slotFile(e.name, old.byteLength)
-    if (f.kind === 'kit' && old.byteLength) replaced.push({ name: e.name, data: old })
-    else cleared.push(f)
   }
 
-  for (const n of [...replaced.map((r) => r.name), ...cleared.map((c) => c.name), ...litter]) if (n !== written) await d.remove(n)
+  // The folder must be empty now; if something unlisted is still in it, the kit goes back.
+  for (const n of [...replaced.map((r) => r.name), ...litter]) await d.remove(n)
+  const fresh = existed ? await emptied(t, d.name) : d
+  if (!fresh) {
+    for (const r of replaced) await d.write(r.name, r.data)
+    throw new Error(`track ${track}, slot ${slot} holds something zed gnome can't show — a factory kit, or a kit another slot also plays. nothing was written.`)
+  }
+  d = fresh
   await d.write(written, data)
   const check = await d.read(written)
   if (!check || check.byteLength !== data.byteLength) throw new Error(`${written} did not verify after writing — try again before ejecting.`)
-  return { written, path: `${SAMPLE_DIR}/${t.name}/${d.name}/${written}`, replaced, cleared, madeSlot: !existed }
+  // Chrome marks what it writes as downloaded, and on the OP-Z's FAT disk macOS keeps that in a ._ file beside the kit.
+  for (const e of await d.entries()) if (e.kind === 'file' && isLitter(e.name)) await d.remove(e.name)
+  return { written, path: `${SAMPLE_DIR}/${t.name}/${d.name}/${written}`, replaced, madeSlot: !existed }
 }
 
 /** The browser's directory handle, behind the Dir interface. */
@@ -264,41 +286,68 @@ export function handleDir(handle: FileSystemDirectoryHandle): Dir {
     async remove(name) {
       await handle.removeEntry(name)
     },
+    async rmdir(name) {
+      try {
+        await handle.removeEntry(name)
+        return true
+      } catch (e) {
+        // What Chrome says when the folder has anything in it.
+        if ((e as DOMException).name === 'InvalidModificationError') return false
+        throw e
+      }
+    },
   }
 }
 
-/** An in-memory disk, for tests. */
+/** Names Chrome's File System Access API will not list or open: ~, a dot or a space at either end, after one leading dot. */
+const browserHides = (name: string) => /^[~.\s]|[~.\s]$/.test(name.replace(/^\./, ''))
+const notAllowed = () => new TypeError('Name is not allowed.')
+
+/** An in-memory disk, for tests. It hides names as Chrome does; put a marker in through `files`. */
 export interface MemoryDir extends Dir {
   files: Map<string, Uint8Array>
   dirs: Map<string, MemoryDir>
 }
 
-export function memoryDir(name = 'OP-Z'): MemoryDir {
+/** `appleDouble`: every write leaves a ._ file too, as macOS does on the OP-Z's disk when Chrome writes. */
+export function memoryDir(name = 'OP-Z', opts: { appleDouble?: boolean } = {}): MemoryDir {
   const files = new Map<string, Uint8Array>()
   const dirs = new Map<string, MemoryDir>()
+  const find = (n: string) => [...dirs.entries()].find(([k]) => k.toLowerCase() === n.toLowerCase())
   return {
     name,
     files,
     dirs,
     async entries() {
       return [...[...dirs.keys()].map((n) => ({ name: n, kind: 'directory' as const })), ...[...files.keys()].map((n) => ({ name: n, kind: 'file' as const }))]
+        .filter((e) => !browserHides(e.name))
     },
     async dir(n, create = false) {
-      const hit = [...dirs.entries()].find(([k]) => k.toLowerCase() === n.toLowerCase())
+      const hit = find(n)
       if (hit) return hit[1]
       if (!create) return undefined
-      const d = memoryDir(n)
+      const d = memoryDir(n, opts)
       dirs.set(n, d)
       return d
     },
     async read(n) {
-      return files.get(n)
+      return browserHides(n) ? undefined : files.get(n)
     },
     async write(n, data) {
+      if (browserHides(n)) throw notAllowed()
       files.set(n, data.slice())
+      if (opts.appleDouble && !n.startsWith('._')) files.set(`._${n}`, new Uint8Array(4096))
     },
     async remove(n) {
+      if (browserHides(n)) throw notAllowed()
       if (!files.delete(n)) throw new Error(`${n} not found`)
+    },
+    async rmdir(n) {
+      const hit = find(n)
+      if (!hit) throw new Error(`${n} not found`)
+      if (hit[1].files.size || hit[1].dirs.size) return false
+      dirs.delete(hit[0])
+      return true
     },
   }
 }

@@ -29,7 +29,7 @@ export function Board() {
   const [playing, setPlaying] = useState<number | 'kit' | undefined>()
   const [disk, setDisk] = useState<Dir | undefined>()
   const [report, setReport] = useState<DiskReport | undefined>()
-  const [target, setTarget] = useState<Target>({ track: 1, slot: 1 })
+  const [target, setTarget] = useState<Target | undefined>()
   const [confirming, setConfirming] = useState(false)
   const [result, setResult] = useState<WriteResult | undefined>()
   const [busy, setBusy] = useState<string | undefined>()
@@ -136,10 +136,6 @@ export function Board() {
       setDisk(d)
       setReport(r)
       setResult(undefined)
-      if (r.ok) {
-        const free = r.slots.find((s) => !s.files.length && r.tracks.find((t) => t.n === s.track)?.folder)
-        if (free) setTarget({ track: free.track, slot: free.slot })
-      }
     } catch (e) {
       if ((e as Error).name !== 'AbortError') setNote((e as Error).message)
     } finally {
@@ -177,7 +173,7 @@ export function Board() {
   }
 
   async function write() {
-    if (!disk) return
+    if (!disk || !target) return
     setConfirming(false)
     silence()
     setBusy('writing')
@@ -232,10 +228,11 @@ export function Board() {
   hearRef.current = hear
 
   const art = useMemo(() => kitArt(name, keys.map((s) => (s ? { name: s.name, tone: keyTone(s) } : undefined))), [name, keys])
-  const targetSlot = report?.slots.find((s) => s.track === target.track && s.slot === target.slot)
-  const yours = report?.slots.filter((s) => s.files.some((f) => f.kind !== 'factory')).length ?? 0
-  const writeName = report ? freeName(takenNames(report, target.track, target.slot), kitFileName(name)) : kitFileName(name)
-  const canWrite = !!disk && !!report?.ok && count > 0 && !over && !busy && !!report.tracks.find((t) => t.n === target.track)?.folder
+  const targetSlot = target && report?.slots.find((s) => s.track === target.track && s.slot === target.slot)
+  const yours = report?.slots.filter((s) => s.files.length).length ?? 0
+  const writeName = report && target ? freeName(takenNames(report, target.track, target.slot), kitFileName(name)) : kitFileName(name)
+  const canWrite = !!disk && !!report?.ok && !!target && !targetSlot?.hidden && count > 0 && !over && !busy
+    && !!report.tracks.find((t) => t.n === target.track)?.folder
 
   return (
     <div className="bench min-h-dvh">
@@ -290,13 +287,12 @@ export function Board() {
                 title="the kit as an .aif — drop it in a slot folder on the op-z yourself">
                 download .aif
               </button>
-              <button type="button" disabled={!canWrite} onClick={() => setConfirming(true)} className={primary}>
+              <button type="button" disabled={!canWrite} onClick={() => setConfirming(true)} className={primary}
+                title={report?.ok && !target ? 'pick a slot in the grid below first' : undefined}>
                 write to op-z
               </button>
             </div>
           </div>
-
-          <Unverified />
 
           {report && !report.ok && (
             <p className="data m-0 border-b border-rule bg-orange-soft px-3.5 py-2 text-ink">{report.problem}</p>
@@ -403,7 +399,9 @@ export function Board() {
           <section className="border border-rule bg-paper" aria-label="the op-z's drum slots">
             <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-rule bg-panel px-3.5 py-2.5">
               <span className="label">drum slots on the op-z · pick where the kit goes, or open one to edit it</span>
-              <span className="label">writing to <b className="font-medium text-ink">track {target.track}, slot {target.slot}</b></span>
+              <span className="label">
+                {target ? <>writing to <b className="font-medium text-ink">track {target.track}, slot {target.slot}</b></> : <b className="font-medium text-orange">pick a slot for the kit</b>}
+              </span>
             </div>
             <div className="overflow-x-auto p-3.5">
               <table className="w-full border-collapse">
@@ -421,16 +419,16 @@ export function Board() {
                         <td className="label p-1">{t.n} {t.name}</td>
                         {Array.from({ length: SLOTS }, (_, j) => {
                           const s = report.slots.find((x) => x.track === t.n && x.slot === j + 1)!
-                          const on = target.track === t.n && target.slot === j + 1
-                          const file = s.files.find((f) => f.kind !== 'factory') ?? s.files[0]
+                          const on = target?.track === t.n && target.slot === j + 1
+                          const file = s.files[0]
                           return (
                             <td key={j} className="p-0.5">
                               <button type="button" disabled={!folder} onClick={() => setTarget({ track: t.n, slot: j + 1 })}
-                                onDoubleClick={() => file?.kind === 'kit' && void openSlot(t.n, j + 1, file.name)}
-                                title={file ? `${describe(file)}${file.kind === 'kit' ? ' — double-click to open it' : ''}` : 'empty'}
+                                onDoubleClick={() => file && void openSlot(t.n, j + 1, file.name)}
+                                title={file ? `${describe(file)} — double-click to open it` : s.hidden ? 'in use: a factory kit, or a kit another slot also plays' : 'empty'}
                                 className={`data h-9 w-full min-w-14 truncate border px-1 text-[11px] disabled:opacity-30
-                                  ${on ? 'border-orange bg-orange-soft text-ink' : file?.kind === 'factory' ? 'border-rule-soft bg-paper text-mute' : file ? 'border-rule bg-panel text-ink' : 'border-dashed border-rule-soft text-mute'}`}>
-                                {file ? shortName(file) : '·'}
+                                  ${on ? 'border-orange bg-orange-soft text-ink' : s.hidden ? 'border-rule-soft bg-paper text-mute' : file ? 'border-rule bg-panel text-ink' : 'border-dashed border-rule-soft text-mute'}`}>
+                                {file ? shortName(file) : s.hidden ? 'in use' : '·'}
                               </button>
                             </td>
                           )
@@ -440,19 +438,28 @@ export function Board() {
                   })}
                 </tbody>
               </table>
-              {targetSlot?.files[0] && (
+              {target && targetSlot?.files[0] && (
                 <p className="label m-0 mt-2 flex flex-wrap items-center gap-2">
                   this slot holds {targetSlot.files.map(describe).join('; ')} — writing replaces it.
-                  {targetSlot.files.filter((f) => f.kind === 'kit').map((f) => (
+                  {targetSlot.files.map((f) => (
                     <button key={f.name} type="button" className={bar} onClick={() => void openSlot(target.track, target.slot, f.name)}>
                       open {f.name} here
                     </button>
                   ))}
                 </p>
               )}
+              {targetSlot?.hidden && (
+                <p className="label m-0 mt-2 text-orange">
+                  this slot is in use, so zed gnome won't write here. pick another, or if you don't need that kit, delete the ~
+                  file in samplepacks/{report.tracks.find((x) => x.n === targetSlot.track)?.folder}/{targetSlot.folder} in finder
+                  and open the op-z here again.
+                </p>
+              )}
               <p className="label m-0 mt-2">
-                dim cells are factory kits. once the op-z imports a kit it keeps the audio inside and leaves a 0-byte
-                ~name.aif on the disk, so those can't be opened or saved from here — keep your own copy.
+                "in use" cells hold a 0-byte ~name file, which is how the op-z marks a factory kit, or a kit another slot also
+                plays. chrome won't show or touch those files, so zed gnome finds them by trying to delete each slot folder that
+                looks empty: that only works when nothing is in it, and the folder is made again straight away. your own kits
+                stay on the disk as full .aif files.
               </p>
               {report.importLog.length > 0 && (
                 <details className="mt-3 border-t border-rule pt-2">
@@ -474,14 +481,9 @@ export function Board() {
             <p className="label m-0 mt-1 text-ink">
               {result.path}{result.madeSlot ? ' (the slot folder was missing, so zed gnome made it)' : ''}
               {result.written !== kitFileName(name) ? ` — named ${result.written} because another slot already uses ${kitFileName(name)}, and the op-z drops both when a name appears twice` : ''}.
-              eject the op-z properly: it imports the kit as it leaves content mode, and the file on the disk becomes a 0-byte
-              ~{result.written} — that is normal. open the op-z here again afterwards and zed gnome shows what its import log said.
+              eject the op-z properly: it imports the kit as it leaves content mode, and the .aif stays on the disk. open the
+              op-z here again afterwards and zed gnome shows what its import log said.
             </p>
-            {result.cleared.length > 0 && (
-              <p className="label m-0 mt-2 text-ink">
-                cleared {result.cleared.map(describe).join('; ')} from the slot.
-              </p>
-            )}
             {result.replaced.length > 0 && (
               <p className="label m-0 mt-2 flex flex-wrap items-center gap-2 text-ink">
                 replaced {result.replaced.map((r) => r.name).join(', ')}. the op-z has no room for backups, so the old kit is
@@ -495,7 +497,7 @@ export function Board() {
         )}
       </div>
 
-      {confirming && disk && (
+      {confirming && disk && target && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 p-4" role="dialog" aria-modal aria-label="write to op-z">
           <div className="w-full max-w-md border border-rule bg-paper p-4">
             <p className="data m-0 font-medium">write {writeName} to track {target.track}, slot {target.slot}?</p>
@@ -505,12 +507,8 @@ export function Board() {
               {!targetSlot?.files.length && ' the slot is empty.'}
             </p>
             {targetSlot?.files.map((f) => (
-              <p key={f.name} className={`label m-0 mt-1 ${f.kind === 'kit' ? '' : 'text-orange'}`}>
-                {f.kind === 'kit'
-                  ? `replaces ${f.name}, which is read into this page first so you can save it afterwards.`
-                  : f.kind === 'imported'
-                    ? `replaces ${f.name.slice(1)}, a kit already inside the op-z. its audio can't be copied out, so it is gone unless you have it elsewhere.`
-                    : `replaces this slot's factory kit (${f.name}). zed gnome can't copy factory kits out.`}
+              <p key={f.name} className="label m-0 mt-1">
+                replaces {f.name}, which is read into this page first so you can save it afterwards.
               </p>
             ))}
             <div className="mt-3 flex justify-end gap-1.5">
@@ -635,30 +633,6 @@ function Check({ label, on, set }: { label: string; on: boolean; set: (v: boolea
   )
 }
 
-/** Mic Gnome's preview banner: the format is sourced, but not yet tried on a unit. */
-function Unverified() {
-  const [hidden, setHidden] = useState(() => {
-    try {
-      return localStorage.getItem('zedgnome:format-note-dismissed') === '1'
-    } catch {
-      return false
-    }
-  })
-  if (hidden) return null
-  return (
-    <p className="label m-0 flex items-baseline justify-between gap-4 border-b border-rule bg-panel px-3.5 py-2 leading-relaxed">
-      <span>
-        the kit format comes from open-source tools people use with their op-1s and op-zs, but zed gnome <b className="font-medium text-orange">hasn't
-        been tried on an op-z yet</b>. it writes one mono aiff per kit with the op-1 drum settings inside, and keeps anything it replaces for you to save.
-      </span>
-      <button type="button" className="shrink-0 underline hover:text-orange" onClick={() => {
-        try { localStorage.setItem('zedgnome:format-note-dismissed', '1') } catch { /* this session is enough */ }
-        setHidden(true)
-      }}>got it</button>
-    </p>
-  )
-}
-
 function save(data: Uint8Array, fileName: string) {
   const url = URL.createObjectURL(new Blob([data as BlobPart], { type: 'audio/aiff' }))
   const a = document.createElement('a')
@@ -668,14 +642,9 @@ function save(data: Uint8Array, fileName: string) {
   setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
-/** One slot entry, as a person would say it. */
-function describe(f: SlotFile): string {
-  if (f.kind === 'factory') return `the factory kit (${f.name})`
-  if (f.kind === 'imported') return `${f.name.slice(1)}, already inside the op-z`
-  return `${f.name}, ${kb(f.bytes)}`
-}
-
-const shortName = (f: SlotFile) => (f.kind === 'factory' ? 'factory' : f.name.replace(/^~/, '').replace(/\.aiff?$/i, ''))
+/** One kit in a slot, as a person would say it. */
+const describe = (f: SlotFile) => `${f.name}, ${kb(f.bytes)}`
+const shortName = (f: SlotFile) => f.name.replace(/\.aiff?$/i, '')
 
 /** A word on the import log's last run, for its summary line. */
 function importVerdict(lines: string[]): string {
