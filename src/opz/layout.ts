@@ -21,7 +21,7 @@ export const DRUM_TRACKS = [
   { n: 1, name: 'kick' },
   { n: 2, name: 'snare' },
   { n: 3, name: 'perc' },
-  { n: 4, name: 'sample' },
+  { n: 4, name: 'fx' },
 ] as const
 export const SLOTS = 10
 

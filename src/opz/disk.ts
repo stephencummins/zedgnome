@@ -9,8 +9,21 @@
  *   2. the OP-Z has 24 MB in all, so backups do not go on it: the kit being
  *      replaced is read into the page first, checked, and handed back as a
  *      download
- *   3. one .aif per slot, so anything else in the slot is part of what is
+ *   3. one kit per slot, so anything else in the slot is part of what is
  *      replaced
+ *
+ * What the disk shows is the device's export, not a plain folder (from
+ * ioma8/opz-firmware-notes, read off a unit's import log):
+ *
+ *   - a slot holding a factory kit shows a 0-byte `~13.engine` marker naming
+ *     its plug, so it is not empty
+ *   - once a kit is imported, the device replaces the `.aif` with a 0-byte
+ *     `~name.aif` marker; the audio is inside the OP-Z from then on and cannot
+ *     be read back off the disk
+ *   - a pack declared twice under one name (a real file and a marker, or two
+ *     markers) makes the device clear both slots, so every kit we write gets
+ *     a name no other slot uses
+ *   - `import.log` at the disk root records the last import, line by line
  */
 import { DRUM_TRACKS, SAMPLE_DIR, SLOTS, leadingNumber } from './layout'
 
@@ -26,6 +39,8 @@ export interface Dir {
 export interface SlotFile {
   name: string
   bytes: number
+  /** kit: audio on the disk · imported: a kit already inside the OP-Z · factory: a factory plug's marker */
+  kind: 'kit' | 'imported' | 'factory'
 }
 
 export interface DiskSlot {
@@ -44,9 +59,45 @@ export interface DiskReport {
   slots: DiskSlot[]
   /** Kits the OP-Z refused last time, from its rejected folder. */
   rejected: string[]
+  /** The last import's lines from import.log, if the disk root was picked. */
+  importLog: string[]
 }
 
 const isAif = (name: string) => /\.aiff?$/i.test(name) && !name.startsWith('.')
+/** Everything in a slot that declares what it plays; ._ files are macOS's AppleDouble litter. */
+const isSlotEntry = (name: string) => isAif(name) || (name.startsWith('~') && /\.(aiff?|engine)$/i.test(name))
+const isLitter = (name: string) => name.startsWith('._')
+
+export function slotFile(name: string, bytes: number): SlotFile {
+  const kind = name.startsWith('~') ? (/\.engine$/i.test(name) ? 'factory' : 'imported') : 'kit'
+  return { name, bytes, kind }
+}
+
+/** A kit's name as the device knows it: markers carry a leading ~. */
+const packName = (file: string) => file.replace(/^~/, '').toLowerCase()
+
+/** The name to write under, so no other slot already declares a pack by it. */
+export function freeName(taken: string[], name: string): string {
+  const used = new Set(taken.map(packName))
+  if (!used.has(name.toLowerCase())) return name
+  const base = name.replace(/\.aiff?$/i, '')
+  for (let i = 2; ; i++) {
+    const next = `${base.slice(0, 24 - String(i).length - 1)}-${i}.aif`
+    if (!used.has(next)) return next
+  }
+}
+
+/** Pack names declared outside one slot, from an inspection. */
+export function takenNames(report: DiskReport, track: number, slot: number): string[] {
+  return report.slots.filter((s) => !(s.track === track && s.slot === slot)).flatMap((s) => s.files.map((f) => f.name))
+}
+
+/** The last [IMPORT STARTED] … block of import.log. */
+export function lastImport(log: string): string[] {
+  const lines = log.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
+  const start = lines.map((l) => l.includes('[IMPORT STARTED]')).lastIndexOf(true)
+  return start < 0 ? lines.slice(-20) : lines.slice(start)
+}
 
 /** The samplepacks folder, whether the disk or the folder itself was picked. */
 export async function findSamplepacks(root: Dir): Promise<Dir | undefined> {
@@ -66,7 +117,7 @@ async function slotDir(track: Dir, n: number, create = false): Promise<Dir | und
 }
 
 export async function inspect(root: Dir): Promise<DiskReport> {
-  const empty = { tracks: [], slots: [], rejected: [] }
+  const empty = { tracks: [], slots: [], rejected: [], importLog: [] }
   const packs = await findSamplepacks(root)
   if (!packs) {
     return {
@@ -85,7 +136,7 @@ export async function inspect(root: Dir): Promise<DiskReport> {
       const files: SlotFile[] = []
       if (d) {
         for (const e of await d.entries()) {
-          if (e.kind === 'file' && isAif(e.name)) files.push({ name: e.name, bytes: (await d.read(e.name))?.byteLength ?? 0 })
+          if (e.kind === 'file' && isSlotEntry(e.name)) files.push(slotFile(e.name, (await d.read(e.name))?.byteLength ?? 0))
         }
       }
       slots.push({ track: n, slot: s, folder: d?.name, files })
@@ -95,8 +146,24 @@ export async function inspect(root: Dir): Promise<DiskReport> {
     return { ok: false, problem: 'there is a samplepacks folder, but none of the drum track folders (1 to 4) are in it.', ...empty }
   }
   const rej = (await root.dir('rejected')) ?? (await packs.dir('rejected'))
-  const rejected = rej ? (await rej.entries()).filter((e) => e.kind === 'file' && !e.name.startsWith('.')).map((e) => e.name) : []
-  return { ok: true, tracks, slots, rejected }
+  const rejected = rej ? await listFiles(rej) : []
+  const log = packs === root ? undefined : await root.read('import.log')
+  const importLog = log?.byteLength ? lastImport(new TextDecoder().decode(log)) : []
+  return { ok: true, tracks, slots, rejected, importLog }
+}
+
+/** Files under a folder, as relative paths: the device keeps the rejected file's own path. */
+async function listFiles(d: Dir, prefix = ''): Promise<string[]> {
+  const out: string[] = []
+  for (const e of await d.entries()) {
+    if (e.name.startsWith('.')) continue
+    if (e.kind === 'file') out.push(prefix + e.name)
+    else {
+      const sub = await d.dir(e.name)
+      if (sub) out.push(...(await listFiles(sub, `${prefix}${e.name}/`)))
+    }
+  }
+  return out
 }
 
 /** Read one kit off the disk, for listening to or editing. */
@@ -108,10 +175,13 @@ export async function readSlotFile(root: Dir, track: number, slot: number, name:
 }
 
 export interface WriteResult {
+  /** The file name used, which differs from the one asked for if another slot already had it. */
   written: string
   path: string
-  /** What the slot held before, kept in the page so it can be saved. */
+  /** Kits whose audio was on the disk, kept in the page so they can be saved. */
   replaced: { name: string; data: Uint8Array }[]
+  /** Markers removed: kits already inside the OP-Z, and factory plugs. Nothing to save. */
+  cleared: SlotFile[]
   madeSlot: boolean
 }
 
@@ -123,22 +193,43 @@ export async function writeKit(root: Dir, track: number, slot: number, name: str
   const t = await trackDir(packs, track)
   if (!t) throw new Error(`no folder for track ${track} in samplepacks — nothing was written.`)
   const existed = await slotDir(t, slot)
+
+  // Every pack name declared in any other slot, so this one never doubles one up.
+  const taken: string[] = []
+  for (const { n } of DRUM_TRACKS) {
+    const td = await trackDir(packs, n)
+    for (let s = 1; td && s <= SLOTS; s++) {
+      if (n === track && s === slot) continue
+      const sd = await slotDir(td, s)
+      if (sd) taken.push(...(await sd.entries()).filter((e) => e.kind === 'file' && isSlotEntry(e.name)).map((e) => e.name))
+    }
+  }
+  const written = freeName(taken, name)
   const d = existed ?? (await slotDir(t, slot, true))!
 
   // Keep what is being replaced before touching anything.
   const replaced: WriteResult['replaced'] = []
+  const cleared: SlotFile[] = []
+  const litter: string[] = []
   for (const e of await d.entries()) {
-    if (e.kind !== 'file' || !isAif(e.name)) continue
+    if (e.kind !== 'file') continue
+    if (isLitter(e.name)) {
+      litter.push(e.name)
+      continue
+    }
+    if (!isSlotEntry(e.name)) continue
     const old = await d.read(e.name)
     if (!old) throw new Error(`could not read ${e.name} to keep a copy — nothing was changed.`)
-    replaced.push({ name: e.name, data: old })
+    const f = slotFile(e.name, old.byteLength)
+    if (f.kind === 'kit' && old.byteLength) replaced.push({ name: e.name, data: old })
+    else cleared.push(f)
   }
 
-  for (const r of replaced) if (r.name !== name) await d.remove(r.name)
-  await d.write(name, data)
-  const check = await d.read(name)
-  if (!check || check.byteLength !== data.byteLength) throw new Error(`${name} did not verify after writing — try again before ejecting.`)
-  return { written: name, path: `${SAMPLE_DIR}/${t.name}/${d.name}/${name}`, replaced, madeSlot: !existed }
+  for (const n of [...replaced.map((r) => r.name), ...cleared.map((c) => c.name), ...litter]) if (n !== written) await d.remove(n)
+  await d.write(written, data)
+  const check = await d.read(written)
+  if (!check || check.byteLength !== data.byteLength) throw new Error(`${written} did not verify after writing — try again before ejecting.`)
+  return { written, path: `${SAMPLE_DIR}/${t.name}/${d.name}/${written}`, replaced, cleared, madeSlot: !existed }
 }
 
 /** The browser's directory handle, behind the Dir interface. */

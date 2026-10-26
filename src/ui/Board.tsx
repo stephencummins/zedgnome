@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { decodeAiff, isAiff } from '../opz/aiff'
-import { type Dir, type DiskReport, type WriteResult, handleDir, inspect, readSlotFile, writeKit } from '../opz/disk'
+import { type Dir, type DiskReport, type SlotFile, type WriteResult, freeName, handleDir, inspect, readSlotFile, takenNames, writeKit } from '../opz/disk'
 import { encodeDrumKit, kitSlices, readMeta } from '../opz/drumkit'
 import { type Sound, frames, kitFrames, layOut, render, toSound } from '../opz/kit'
 import { COMPUTER_KEYS, DRUM_TRACKS, KEYS, MAX_FRAMES, SLOTS, TARGET, isSharp, keyNote, kitFileName } from '../opz/layout'
@@ -233,6 +233,8 @@ export function Board() {
 
   const art = useMemo(() => kitArt(name, keys.map((s) => (s ? { name: s.name, tone: keyTone(s) } : undefined))), [name, keys])
   const targetSlot = report?.slots.find((s) => s.track === target.track && s.slot === target.slot)
+  const yours = report?.slots.filter((s) => s.files.some((f) => f.kind !== 'factory')).length ?? 0
+  const writeName = report ? freeName(takenNames(report, target.track, target.slot), kitFileName(name)) : kitFileName(name)
   const canWrite = !!disk && !!report?.ok && count > 0 && !over && !busy && !!report.tracks.find((t) => t.n === target.track)?.folder
 
   return (
@@ -268,7 +270,7 @@ export function Board() {
               <span>op-z</span>
               <span aria-hidden>·</span>
               {disk && report?.ok ? (
-                <span>disk <b className="font-medium text-ink">{disk.name || 'open'}</b> · {report.slots.filter((s) => s.files.length).length} drum kit{report.slots.filter((s) => s.files.length).length === 1 ? '' : 's'} on it</span>
+                <span>disk <b className="font-medium text-ink">{disk.name || 'open'}</b> · {yours} kit{yours === 1 ? '' : 's'} of yours on it</span>
               ) : (
                 <span>no disk open</span>
               )}
@@ -420,15 +422,15 @@ export function Board() {
                         {Array.from({ length: SLOTS }, (_, j) => {
                           const s = report.slots.find((x) => x.track === t.n && x.slot === j + 1)!
                           const on = target.track === t.n && target.slot === j + 1
-                          const file = s.files[0]
+                          const file = s.files.find((f) => f.kind !== 'factory') ?? s.files[0]
                           return (
                             <td key={j} className="p-0.5">
                               <button type="button" disabled={!folder} onClick={() => setTarget({ track: t.n, slot: j + 1 })}
-                                onDoubleClick={() => file && void openSlot(t.n, j + 1, file.name)}
-                                title={file ? `${s.files.map((f) => f.name).join(', ')} — double-click to open it` : 'empty'}
+                                onDoubleClick={() => file?.kind === 'kit' && void openSlot(t.n, j + 1, file.name)}
+                                title={file ? `${describe(file)}${file.kind === 'kit' ? ' — double-click to open it' : ''}` : 'empty'}
                                 className={`data h-9 w-full min-w-14 truncate border px-1 text-[11px] disabled:opacity-30
-                                  ${on ? 'border-orange bg-orange-soft text-ink' : file ? 'border-rule bg-panel text-ink' : 'border-dashed border-rule-soft text-mute'}`}>
-                                {file ? file.name.replace(/\.aiff?$/i, '') : '·'}
+                                  ${on ? 'border-orange bg-orange-soft text-ink' : file?.kind === 'factory' ? 'border-rule-soft bg-paper text-mute' : file ? 'border-rule bg-panel text-ink' : 'border-dashed border-rule-soft text-mute'}`}>
+                                {file ? shortName(file) : '·'}
                               </button>
                             </td>
                           )
@@ -440,11 +442,27 @@ export function Board() {
               </table>
               {targetSlot?.files[0] && (
                 <p className="label m-0 mt-2 flex flex-wrap items-center gap-2">
-                  this slot holds {targetSlot.files.map((f) => f.name).join(', ')} — writing replaces it.
-                  <button type="button" className={bar} onClick={() => void openSlot(target.track, target.slot, targetSlot.files[0].name)}>
-                    open it here
-                  </button>
+                  this slot holds {targetSlot.files.map(describe).join('; ')} — writing replaces it.
+                  {targetSlot.files.filter((f) => f.kind === 'kit').map((f) => (
+                    <button key={f.name} type="button" className={bar} onClick={() => void openSlot(target.track, target.slot, f.name)}>
+                      open {f.name} here
+                    </button>
+                  ))}
                 </p>
+              )}
+              <p className="label m-0 mt-2">
+                dim cells are factory kits. once the op-z imports a kit it keeps the audio inside and leaves a 0-byte
+                ~name.aif on the disk, so those can't be opened or saved from here — keep your own copy.
+              </p>
+              {report.importLog.length > 0 && (
+                <details className="mt-3 border-t border-rule pt-2">
+                  <summary className="label cursor-pointer">
+                    last import on the op-z{importVerdict(report.importLog)}
+                  </summary>
+                  <pre className="data m-0 mt-2 overflow-x-auto bg-panel p-2 text-[11px] leading-relaxed text-ink">
+                    {report.importLog.map((l) => (/fail|can't|full|reject/i.test(l) ? `! ${l}` : `  ${l}`)).join('\n')}
+                  </pre>
+                </details>
               )}
             </div>
           </section>
@@ -454,10 +472,16 @@ export function Board() {
           <section className="border border-pass bg-pass-soft px-3.5 py-3" aria-label="written">
             <p className="data m-0 text-pass">written to the op-z ✓</p>
             <p className="label m-0 mt-1 text-ink">
-              {result.path}{result.madeSlot ? ' (the slot folder was missing, so zed gnome made it)' : ''}. eject the op-z
-              properly — it reads the new kit as it leaves content mode. if it turns up in the op-z's rejected folder instead,
-              the op-z didn't accept the format — the file is still fine to keep.
+              {result.path}{result.madeSlot ? ' (the slot folder was missing, so zed gnome made it)' : ''}
+              {result.written !== kitFileName(name) ? ` — named ${result.written} because another slot already uses ${kitFileName(name)}, and the op-z drops both when a name appears twice` : ''}.
+              eject the op-z properly: it imports the kit as it leaves content mode, and the file on the disk becomes a 0-byte
+              ~{result.written} — that is normal. open the op-z here again afterwards and zed gnome shows what its import log said.
             </p>
+            {result.cleared.length > 0 && (
+              <p className="label m-0 mt-2 text-ink">
+                cleared {result.cleared.map(describe).join('; ')} from the slot.
+              </p>
+            )}
             {result.replaced.length > 0 && (
               <p className="label m-0 mt-2 flex flex-wrap items-center gap-2 text-ink">
                 replaced {result.replaced.map((r) => r.name).join(', ')}. the op-z has no room for backups, so the old kit is
@@ -474,13 +498,21 @@ export function Board() {
       {confirming && disk && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 p-4" role="dialog" aria-modal aria-label="write to op-z">
           <div className="w-full max-w-md border border-rule bg-paper p-4">
-            <p className="data m-0 font-medium">write {kitFileName(name)} to track {target.track}, slot {target.slot}?</p>
+            <p className="data m-0 font-medium">write {writeName} to track {target.track}, slot {target.slot}?</p>
             <p className="label m-0 mt-2">
               {count} key{count === 1 ? '' : 's'} · {secs(used)} of 12 s · {kb(kitSize(used))}.
-              {targetSlot?.files.length
-                ? ` it replaces ${targetSlot.files.map((f) => f.name).join(', ')}, which is read into this page first so you can save it afterwards.`
-                : ' the slot is empty.'}
+              {writeName !== kitFileName(name) && ` another slot already uses ${kitFileName(name)}, so it goes in as ${writeName}.`}
+              {!targetSlot?.files.length && ' the slot is empty.'}
             </p>
+            {targetSlot?.files.map((f) => (
+              <p key={f.name} className={`label m-0 mt-1 ${f.kind === 'kit' ? '' : 'text-orange'}`}>
+                {f.kind === 'kit'
+                  ? `replaces ${f.name}, which is read into this page first so you can save it afterwards.`
+                  : f.kind === 'imported'
+                    ? `replaces ${f.name.slice(1)}, a kit already inside the op-z. its audio can't be copied out, so it is gone unless you have it elsewhere.`
+                    : `replaces this slot's factory kit (${f.name}). zed gnome can't copy factory kits out.`}
+              </p>
+            ))}
             <div className="mt-3 flex justify-end gap-1.5">
               <button type="button" className={bar} onClick={() => setConfirming(false)}>cancel</button>
               <button type="button" onClick={() => void write()} className={primary}>write</button>
@@ -634,6 +666,24 @@ function save(data: Uint8Array, fileName: string) {
   a.download = fileName
   a.click()
   setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
+/** One slot entry, as a person would say it. */
+function describe(f: SlotFile): string {
+  if (f.kind === 'factory') return `the factory kit (${f.name})`
+  if (f.kind === 'imported') return `${f.name.slice(1)}, already inside the op-z`
+  return `${f.name}, ${kb(f.bytes)}`
+}
+
+const shortName = (f: SlotFile) => (f.kind === 'factory' ? 'factory' : f.name.replace(/^~/, '').replace(/\.aiff?$/i, ''))
+
+/** A word on the import log's last run, for its summary line. */
+function importVerdict(lines: string[]): string {
+  const bad = lines.filter((l) => /fail|can't|full/i.test(l)).length
+  const good = lines.filter((l) => /importing .*success/i.test(l)).length
+  if (bad) return ` · ${bad} problem${bad === 1 ? '' : 's'}`
+  if (good) return ` · ${good} kit${good === 1 ? '' : 's'} imported`
+  return ''
 }
 
 const secs = (n: number) => `${(n / TARGET.sampleRate).toFixed(2)} s`

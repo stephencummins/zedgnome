@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { decodeAiff } from '../aiff'
-import { inspect, memoryDir, readSlotFile, writeKit } from '../disk'
+import { freeName, inspect, lastImport, memoryDir, readSlotFile, writeKit } from '../disk'
 import { PER_FRAME, encodeDrumKit, kitSlices, readMeta, toPosition } from '../drumkit'
 import { type Sound, frames, kitFrames, layOut, render, toSound } from '../kit'
 import { KEYS, MAX_FRAMES, kitFileName, leadingNumber } from '../layout'
@@ -112,7 +112,7 @@ describe('drum kit aiff', () => {
 async function opz() {
   const root = memoryDir('OP-Z')
   const packs = (await root.dir('samplepacks', true))!
-  for (const t of ['1-kick', '2-snare', '3-perc', '4-sample', '5-bass']) {
+  for (const t of ['1-kick', '2-snare', '3-perc', '4-fx', '5-bass']) {
     const d = (await packs.dir(t, true))!
     for (let s = 1; s <= 10; s++) await d.dir(String(s).padStart(2, '0'), true)
   }
@@ -133,9 +133,9 @@ describe('disk', () => {
     await kick.write('.DS_Store', new Uint8Array(1))
     const r = await inspect(root)
     expect(r.ok).toBe(true)
-    expect(r.tracks.map((t) => t.folder)).toEqual(['1-kick', '2-snare', '3-perc', '4-sample'])
+    expect(r.tracks.map((t) => t.folder)).toEqual(['1-kick', '2-snare', '3-perc', '4-fx'])
     expect(r.slots).toHaveLength(40)
-    expect(r.slots.find((s) => s.track === 1 && s.slot === 3)!.files).toEqual([{ name: 'boom.aif', bytes: 10 }])
+    expect(r.slots.find((s) => s.track === 1 && s.slot === 3)!.files).toEqual([{ name: 'boom.aif', bytes: 10, kind: 'kit' }])
   })
   it('accepts the samplepacks folder itself being picked', async () => {
     const root = await opz()
@@ -151,6 +151,41 @@ describe('disk', () => {
     expect(res.replaced).toEqual([{ name: 'old.aif', data: new Uint8Array([1, 2, 3]) }])
     expect([...slot.files.keys()]).toEqual(['new.aif'])
     expect(await readSlotFile(root, 2, 5, 'new.aif')).toEqual(data)
+  })
+  it('tells kits on the disk from kits already inside the op-z and factory plugs', async () => {
+    const root = await opz()
+    const kick = (await (await root.dir('samplepacks'))!.dir('1-kick'))!
+    await (await kick.dir('01'))!.write('~13.engine', new Uint8Array(0))
+    await (await kick.dir('02'))!.write('~mine.aif', new Uint8Array(0))
+    await (await kick.dir('02'))!.write('._~mine.aif', new Uint8Array(4))
+    const r = await inspect(root)
+    expect(r.slots[0].files).toEqual([{ name: '~13.engine', bytes: 0, kind: 'factory' }])
+    expect(r.slots[1].files).toEqual([{ name: '~mine.aif', bytes: 0, kind: 'imported' }])
+  })
+  it('clears markers and macos litter, and never reuses a name another slot declares', async () => {
+    const root = await opz()
+    const kick = (await (await root.dir('samplepacks'))!.dir('1-kick'))!
+    await (await kick.dir('01'))!.write('~kit.aif', new Uint8Array(0))
+    const slot = (await kick.dir('02'))! as ReturnType<typeof memoryDir>
+    await slot.write('~13.engine', new Uint8Array(0))
+    await slot.write('._old.aif', new Uint8Array(4))
+    const res = await writeKit(root, 1, 2, 'kit.aif', new Uint8Array([1, 2]))
+    expect(res.written).toBe('kit-2.aif')
+    expect(res.replaced).toEqual([])
+    expect(res.cleared.map((c) => c.name)).toEqual(['~13.engine'])
+    expect([...slot.files.keys()]).toEqual(['kit-2.aif'])
+  })
+  it('names around clashes, keeping within 24 characters', () => {
+    expect(freeName(['other.aif'], 'kit.aif')).toBe('kit.aif')
+    expect(freeName(['~KIT.aif', 'kit-2.aif'], 'kit.aif')).toBe('kit-3.aif')
+    expect(freeName(['~abcdefghijklmnopqrstuvwx.aif'], 'abcdefghijklmnopqrstuvwx.aif')).toBe('abcdefghijklmnopqrstuv-2.aif')
+  })
+  it('reads the last import out of import.log', async () => {
+    const log = '[IMPORT STARTED]\nold\n[IMPORT COMPLETE]\n[IMPORT STARTED]\n  importing kit.aif...SUCCESS. New used space 870 kB\n[IMPORT COMPLETE]\n'
+    expect(lastImport(log)).toEqual(['[IMPORT STARTED]', 'importing kit.aif...SUCCESS. New used space 870 kB', '[IMPORT COMPLETE]'])
+    const root = await opz()
+    await root.write('import.log', new TextEncoder().encode(log))
+    expect((await inspect(root)).importLog).toHaveLength(3)
   })
   it('will not write to a synth track', async () => {
     await expect(writeKit(await opz(), 5, 1, 'k.aif', new Uint8Array(4))).rejects.toThrow(/not a drum track/)
