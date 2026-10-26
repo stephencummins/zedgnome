@@ -3,7 +3,8 @@ import { decodeAiff } from '../aiff'
 import { type MemoryDir, freeName, inspect, lastImport, memoryDir, readSlotFile, writeKit } from '../disk'
 import { PER_FRAME, encodeDrumKit, kitSlices, readMeta, toPosition } from '../drumkit'
 import { type Sound, frames, kitFrames, layOut, render, toSound } from '../kit'
-import { KEYS, MAX_FRAMES, kitFileName, leadingNumber } from '../layout'
+import { KEYS, LOW_NOTE, MAX_FRAMES, SYNTH_FRAMES, TRACKS, isDrumTrack, kitFileName, leadingNumber, noteKey } from '../layout'
+import { DEFAULT_ROOT, detectPitch, encodeSynth, freqNote, noteFreq, noteName } from '../synth'
 
 const tone = (rate: number, n: number, amp = 0.5, channels = 1) => ({
   sampleRate: rate,
@@ -20,6 +21,18 @@ describe('layout', () => {
     expect(leadingNumber('4 sample')).toBe(4)
     expect(leadingNumber('rejected')).toBeUndefined()
     expect(leadingNumber('123')).toBeUndefined()
+  })
+  it('has eight tracks, the first four for drums', () => {
+    expect(TRACKS.map((t) => t.n)).toEqual([1, 2, 3, 4, 5, 6, 7, 8])
+    expect(TRACKS.filter((t) => isDrumTrack(t.n)).map((t) => t.n)).toEqual([1, 2, 3, 4])
+  })
+  it('folds any midi note onto the 24 keys, key 1 at f3', () => {
+    expect(noteKey(LOW_NOTE)).toBe(0)
+    expect(noteKey(60)).toBe(7)
+    expect(noteKey(LOW_NOTE + 23)).toBe(23)
+    expect(noteKey(LOW_NOTE + 24)).toBe(0)
+    expect(noteKey(LOW_NOTE - 1)).toBe(23)
+    expect(noteKey(0)).toBeGreaterThanOrEqual(0)
   })
   it('makes safe kit file names', () => {
     expect(kitFileName('My Kit!/../x.aiff')).toBe('my-kitx.aif')
@@ -109,10 +122,86 @@ describe('drum kit aiff', () => {
   })
 })
 
+describe('synth sample aiff', () => {
+  const a3 = Float32Array.from({ length: 44100 }, (_, i) => 0.5 * Math.sin((2 * Math.PI * 220 * i) / 44100))
+  const bytes = encodeSynth('test synth', a3, 220)
+
+  it('is padded with silence to 6 s', () => {
+    const a = decodeAiff(bytes)
+    expect(a.sampleRate).toBe(44100)
+    expect(a.channels).toHaveLength(1)
+    expect(a.channels[0]).toHaveLength(SYNTH_FRAMES)
+    expect(Math.abs(a.channels[0][1000])).toBeGreaterThan(0)
+    expect(a.channels[0].subarray(44100).every((v) => v === 0)).toBe(true)
+  })
+  it('cuts anything longer at 6 s', () => {
+    expect(decodeAiff(encodeSynth('long', new Float32Array(SYNTH_FRAMES + 5000).fill(0.1), 220)).channels[0]).toHaveLength(SYNTH_FRAMES)
+  })
+  it('carries sampler json with its root', () => {
+    const meta = readMeta(bytes)!
+    expect(meta.type).toBe('sampler')
+    expect(meta.name).toBe('test synth')
+    expect(meta.base_freq).toBe(220)
+    expect(meta.synth_version).toBe(1)
+    expect(meta.adsr).toHaveLength(8)
+  })
+  it('keeps the form size and every chunk even', () => {
+    const v = new DataView(bytes.buffer)
+    expect(v.getUint32(4) + 8).toBe(bytes.length)
+    for (let at = 12; at < bytes.length;) {
+      const size = v.getUint32(at + 4)
+      at += 8 + size + (size & 1)
+      expect(at % 2).toBe(0)
+    }
+  })
+  it('reads json that other tools padded with odd bytes', () => {
+    const json = new TextEncoder().encode('op-1{"type":"sampler","base_freq":110}\n\u0000 ')
+    const chunk = new Uint8Array(8 + json.length + (json.length & 1))
+    chunk.set(new TextEncoder().encode('APPL'))
+    new DataView(chunk.buffer).setUint32(4, json.length)
+    chunk.set(json, 8)
+    const form = new Uint8Array(12 + chunk.length)
+    form.set(new TextEncoder().encode('FORM'))
+    new DataView(form.buffer).setUint32(4, form.length - 8)
+    form.set(new TextEncoder().encode('AIFF'), 8)
+    form.set(chunk, 12)
+    expect(readMeta(form)).toMatchObject({ type: 'sampler', base_freq: 110 })
+  })
+})
+
+describe('pitch', () => {
+  const wave = (hz: number, f: (phase: number) => number, n = 22050) =>
+    Float32Array.from({ length: n }, (_, i) => 0.5 * f(((hz * i) / 44100) % 1))
+  const sine = (p: number) => Math.sin(2 * Math.PI * p)
+  const saw = (p: number) => 2 * p - 1
+  const cents = (a: number, b: number) => Math.abs(1200 * Math.log2(a / b))
+
+  it('names notes and finds them again', () => {
+    expect(noteName(60)).toBe('c4')
+    expect(noteName(69)).toBe('a4')
+    expect(noteName(53)).toBe('f3')
+    expect(noteFreq(69)).toBe(440)
+    expect(freqNote(DEFAULT_ROOT)).toBeCloseTo(60)
+  })
+  it('hears a sine, a saw and a low bass note to within a few cents', () => {
+    expect(cents(detectPitch(wave(220, sine))!, 220)).toBeLessThan(5)
+    expect(cents(detectPitch(wave(110, saw))!, 110)).toBeLessThan(5)
+    expect(cents(detectPitch(wave(55, saw))!, 55)).toBeLessThan(5)
+    expect(cents(detectPitch(wave(1046.5, sine))!, 1046.5)).toBeLessThan(10)
+  })
+  it('hears no note in noise, silence, or a sound too short to tell', () => {
+    let seed = 1
+    const rand = () => ((seed = (seed * 16807) % 2147483647) / 2147483647) * 2 - 1
+    expect(detectPitch(Float32Array.from({ length: 22050 }, rand))).toBeUndefined()
+    expect(detectPitch(new Float32Array(22050))).toBeUndefined()
+    expect(detectPitch(wave(220, sine, 1000))).toBeUndefined()
+  })
+})
+
 async function opz(opts: { appleDouble?: boolean } = {}) {
   const root = memoryDir('OP-Z', opts)
   const packs = (await root.dir('samplepacks', true))!
-  for (const t of ['1-kick', '2-snare', '3-perc', '4-fx', '5-bass']) {
+  for (const t of ['1-kick', '2-snare', '3-perc', '4-fx', '5-bass', '6-lead', '7-arpeggio', '8-chord']) {
     const d = (await packs.dir(t, true))!
     for (let s = 1; s <= 10; s++) await d.dir(String(s).padStart(2, '0'), true)
   }
@@ -128,15 +217,15 @@ describe('disk', () => {
     expect(r.problem).toMatch(/content mode/)
     await expect(writeKit(memoryDir(), 1, 1, 'k.aif', new Uint8Array(4))).rejects.toThrow(/nothing was written/)
   })
-  it('finds the four drum tracks and their slots', async () => {
+  it('finds the eight tracks and their slots', async () => {
     const root = await opz()
     const kick = (await (await (await root.dir('samplepacks'))!.dir('1-kick'))!.dir('03'))!
     await kick.write('boom.aif', new Uint8Array(10))
     await kick.write('.DS_Store', new Uint8Array(1))
     const r = await inspect(root)
     expect(r.ok).toBe(true)
-    expect(r.tracks.map((t) => t.folder)).toEqual(['1-kick', '2-snare', '3-perc', '4-fx'])
-    expect(r.slots).toHaveLength(40)
+    expect(r.tracks.map((t) => t.folder)).toEqual(['1-kick', '2-snare', '3-perc', '4-fx', '5-bass', '6-lead', '7-arpeggio', '8-chord'])
+    expect(r.slots).toHaveLength(80)
     expect(r.slots.find((s) => s.track === 1 && s.slot === 3)!.files).toEqual([{ name: 'boom.aif', bytes: 10 }])
     expect(r.slots.filter((s) => s.hidden)).toEqual([])
   })
@@ -215,7 +304,29 @@ describe('disk', () => {
     await root.write('import.log', new TextEncoder().encode(log))
     expect((await inspect(root)).importLog).toHaveLength(3)
   })
-  it('will not write to a synth track', async () => {
-    await expect(writeKit(await opz(), 5, 1, 'k.aif', new Uint8Array(4))).rejects.toThrow(/not a drum track/)
+  it('finds the op-z\'s own synths in synth slots', async () => {
+    const root = await opz()
+    ;(await slotOf(root, '6-lead', '10')).files.set('~10.engine', new Uint8Array(0))
+    const r = await inspect(root)
+    expect(r.slots.filter((s) => s.hidden).map((s) => `${s.track}/${s.slot}`)).toEqual(['6/10'])
+  })
+  it('writes a synth sample to a synth track, making a missing slot folder', async () => {
+    const root = await opz()
+    const arp = (await (await root.dir('samplepacks'))!.dir('7-arpeggio')) as MemoryDir
+    arp.dirs.delete('04')
+    const data = encodeSynth('pad', new Float32Array(100), 220)
+    const res = await writeKit(root, 7, 4, 'pad.aif', data)
+    expect(res.path).toBe('samplepacks/7-arpeggio/04/pad.aif')
+    expect(res.madeSlot).toBe(true)
+    expect(await readSlotFile(root, 7, 4, 'pad.aif')).toEqual(data)
+  })
+  it('puts kits on drum tracks and synth samples on synth tracks, nowhere else', async () => {
+    const root = await opz()
+    const kit = encodeDrumKit('kit', layOut(keys(sound(100))))
+    const synth = encodeSynth('synth', new Float32Array(100), 220)
+    await expect(writeKit(root, 5, 1, 'k.aif', kit)).rejects.toThrow(/track 5 takes synth samples.*nothing was written/)
+    await expect(writeKit(root, 1, 1, 's.aif', synth)).rejects.toThrow(/track 1 takes drum kits.*nothing was written/)
+    await expect(writeKit(root, 9, 1, 's.aif', synth)).rejects.toThrow(/no track 9/)
+    expect((await inspect(root)).slots.every((s) => !s.files.length)).toBe(true)
   })
 })

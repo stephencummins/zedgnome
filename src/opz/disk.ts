@@ -16,9 +16,9 @@
  * how_to_import.txt on the disk, and a real unit):
  *
  *   - a 0-byte `~name.aif` is a slot playing a pack held somewhere else: a
- *     factory kit inside the OP-Z, or the same pack as another slot. Synth
- *     tracks use `~13.engine`. Your own kits stay on the disk as full .aif
- *     files after import
+ *     factory kit inside the OP-Z, or the same pack as another slot. A synth
+ *     slot playing one of the device's own synths holds `~13.engine`. Your own
+ *     kits and samples stay on the disk as full .aif files after import
  *   - only one pack per slot folder is imported; the rest are rejected
  *   - a pack declared twice under one name makes the device clear both slots
  *     (ioma8/opz-firmware-notes), so every kit we write gets a name no other
@@ -31,7 +31,8 @@
  * so a slot that lists as empty only counts as empty once deleting it works,
  * and it is made again straight away.
  */
-import { DRUM_TRACKS, SAMPLE_DIR, SLOTS, leadingNumber } from './layout'
+import { readMeta } from './drumkit'
+import { SAMPLE_DIR, SLOTS, TRACKS, isDrumTrack, leadingNumber } from './layout'
 
 export interface Dir {
   name: string
@@ -67,7 +68,7 @@ export interface DiskSlot {
 export interface DiskReport {
   ok: boolean
   problem?: string
-  /** The four drum tracks' folder names on the disk. */
+  /** The eight tracks' folder names on the disk. */
   tracks: { n: number; folder?: string }[]
   slots: DiskSlot[]
   /** Kits the OP-Z refused last time, from its rejected folder. */
@@ -154,7 +155,7 @@ export async function inspect(root: Dir): Promise<DiskReport> {
   }
   const tracks: DiskReport['tracks'] = []
   const slots: DiskSlot[] = []
-  for (const { n } of DRUM_TRACKS) {
+  for (const { n } of TRACKS) {
     const t = await trackDir(packs, n)
     tracks.push({ n, folder: t?.name })
     for (let s = 1; s <= SLOTS; s++) {
@@ -163,7 +164,7 @@ export async function inspect(root: Dir): Promise<DiskReport> {
     }
   }
   if (!tracks.some((t) => t.folder)) {
-    return { ok: false, problem: 'there is a samplepacks folder, but none of the drum track folders (1 to 4) are in it.', ...empty }
+    return { ok: false, problem: 'there is a samplepacks folder, but none of the track folders (1 to 8) are in it.', ...empty }
   }
   const rej = (await root.dir('rejected')) ?? (await packs.dir('rejected'))
   const rejected = rej ? await listFiles(rej) : []
@@ -203,9 +204,14 @@ export interface WriteResult {
   madeSlot: boolean
 }
 
+/** A drum kit or a synth sample into its slot: tracks 1–4 take kits, 5–8 samples. */
 export async function writeKit(root: Dir, track: number, slot: number, name: string, data: Uint8Array): Promise<WriteResult> {
-  if (!DRUM_TRACKS.some((t) => t.n === track)) throw new Error(`track ${track} is not a drum track.`)
+  if (!TRACKS.some((t) => t.n === track)) throw new Error(`there is no track ${track}.`)
   if (slot < 1 || slot > SLOTS) throw new Error(`there is no slot ${slot}.`)
+  const kind = readMeta(data)?.type
+  if (kind && kind !== (isDrumTrack(track) ? 'drum' : 'sampler')) {
+    throw new Error(`track ${track} takes ${isDrumTrack(track) ? 'drum kits' : 'synth samples'}, and this is a ${kind === 'drum' ? 'drum kit' : 'synth sample'} — nothing was written.`)
+  }
   const packs = await findSamplepacks(root)
   if (!packs) throw new Error('no samplepacks folder — nothing was written.')
   const t = await trackDir(packs, track)
@@ -214,7 +220,7 @@ export async function writeKit(root: Dir, track: number, slot: number, name: str
 
   // Every pack name declared in any other slot, so this one never doubles one up.
   const taken: string[] = []
-  for (const { n } of DRUM_TRACKS) {
+  for (const { n } of TRACKS) {
     const td = await trackDir(packs, n)
     for (let s = 1; td && s <= SLOTS; s++) {
       if (n === track && s === slot) continue
@@ -243,7 +249,7 @@ export async function writeKit(root: Dir, track: number, slot: number, name: str
   const fresh = existed ? await emptied(t, d.name) : d
   if (!fresh) {
     for (const r of replaced) await d.write(r.name, r.data)
-    throw new Error(`track ${track}, slot ${slot} holds something zed gnome can't show — a factory kit, or a kit another slot also plays. nothing was written.`)
+    throw new Error(`track ${track}, slot ${slot} holds something zed gnome can't show — one of the op-z's own sounds, or a pack another slot also plays. nothing was written.`)
   }
   d = fresh
   await d.write(written, data)

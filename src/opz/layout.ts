@@ -5,7 +5,8 @@
  * key, at most 12 seconds in all. In content mode (hold the track button while
  * switching on) the OP-Z mounts as a disk with a samplepacks folder: a folder
  * per track, ten slot folders in each, one .aif per slot. Tracks 1–4 are the
- * drum tracks.
+ * drum tracks. Tracks 5–8 are the synth tracks, and take a synth sample: one
+ * sound of up to 6 seconds that the keys play at different pitches.
  *
  * The folder names come from Teenage Engineering's guide and people's disks,
  * not from a disk this app has seen, so they are matched by their leading
@@ -23,7 +24,18 @@ export const DRUM_TRACKS = [
   { n: 3, name: 'perc' },
   { n: 4, name: 'fx' },
 ] as const
+export const SYNTH_TRACKS = [
+  { n: 5, name: 'bass' },
+  { n: 6, name: 'lead' },
+  { n: 7, name: 'arp' },
+  { n: 8, name: 'chord' },
+] as const
+export const TRACKS = [...DRUM_TRACKS, ...SYNTH_TRACKS]
+export const isDrumTrack = (n: number) => DRUM_TRACKS.some((t) => t.n === n)
 export const SLOTS = 10
+
+export const SYNTH_SECONDS = 6
+export const SYNTH_FRAMES = SYNTH_SECONDS * TARGET.sampleRate
 
 export const SAMPLE_DIR = 'samplepacks'
 
@@ -31,6 +43,13 @@ export const SAMPLE_DIR = 'samplepacks'
 const NOTES = ['f', 'f#', 'g', 'g#', 'a', 'a#', 'b', 'c', 'c#', 'd', 'd#', 'e']
 export const keyNote = (i: number) => NOTES[i % 12]
 export const isSharp = (i: number) => NOTES[i % 12].endsWith('#')
+/**
+ * Key 1 as a MIDI note: F3, taking the OP-Z's octave 0 to run F3 to E5 so
+ * key 8 is middle C. Not yet checked on the device.
+ */
+export const LOW_NOTE = 53
+/** Any MIDI note onto one of the 24 keys, an octave at a time. */
+export const noteKey = (note: number) => (((note - LOW_NOTE) % KEYS) + KEYS) % KEYS
 
 /**
  * The computer keys that play each OP-Z key: the tracker layout, z to / for

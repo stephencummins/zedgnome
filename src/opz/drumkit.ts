@@ -10,6 +10,7 @@
  */
 import { KEYS, MAX_FRAMES, TARGET } from './layout'
 import type { Laid } from './kit'
+import type { SynthMeta } from './synth'
 
 /** 2147483646 / (44100 × 12) ≈ 4058, as teoperator rounds it. */
 export const PER_FRAME = 4058
@@ -34,6 +35,9 @@ export interface DrumMeta {
   lfo_type: string
   lfo_params: number[]
 }
+
+/** Either kind of op-1 JSON as read off a file, where nothing is sure to be there. */
+export type OpMeta = Partial<Omit<DrumMeta, 'type'> & Omit<SynthMeta, 'type'>> & { type?: string }
 
 const fill = (v: number) => Array<number>(KEYS).fill(v)
 
@@ -81,8 +85,8 @@ export function encodeDrumKit(name: string, laid: Laid): Uint8Array {
 }
 
 /** A mono 16-bit AIFF, with the op-1 APPL chunk when meta is given. */
-export function encodeAiff(samples: Float32Array, meta?: DrumMeta): Uint8Array {
-  const frames = Math.min(samples.length, MAX_FRAMES)
+export function encodeAiff(samples: Float32Array, meta?: DrumMeta | SynthMeta, maxFrames = MAX_FRAMES): Uint8Array {
+  const frames = Math.min(samples.length, maxFrames)
   let appl = new Uint8Array(0)
   if (meta) {
     const text = 'op-1' + JSON.stringify(meta) + '\n'
@@ -123,7 +127,7 @@ export function encodeAiff(samples: Float32Array, meta?: DrumMeta): Uint8Array {
 }
 
 /** The op-1 JSON from an AIFF, if it has any. */
-export function readMeta(bytes: Uint8Array): Partial<DrumMeta> | undefined {
+export function readMeta(bytes: Uint8Array): OpMeta | undefined {
   if (bytes.byteLength < 12) return undefined
   const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
   let at = 12
@@ -133,7 +137,8 @@ export function readMeta(bytes: Uint8Array): Partial<DrumMeta> | undefined {
     if (id === 'APPL' && ascii(bytes, at + 8, 4) === 'op-1') {
       const text = ascii(bytes, at + 12, Math.min(size - 4, bytes.byteLength - at - 12))
       try {
-        return JSON.parse(text.trim()) as Partial<DrumMeta>
+        // Other tools pad the JSON out with odd bytes; it ends at its last brace.
+        return JSON.parse(text.slice(0, text.lastIndexOf('}') + 1)) as OpMeta
       } catch {
         return undefined
       }
@@ -144,7 +149,7 @@ export function readMeta(bytes: Uint8Array): Partial<DrumMeta> | undefined {
 }
 
 /** A drum kit's slices as frame ranges, empty keys left out. */
-export function kitSlices(meta: Partial<DrumMeta>, frames: number): ({ start: number; end: number } | undefined)[] {
+export function kitSlices(meta: OpMeta, frames: number): ({ start: number; end: number } | undefined)[] {
   return Array.from({ length: KEYS }, (_, i) => {
     const start = Math.min(frames, toFrame(meta.start?.[i] ?? 0))
     const end = Math.min(frames, toFrame(meta.end?.[i] ?? 0))
