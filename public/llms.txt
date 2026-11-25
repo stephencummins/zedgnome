@@ -1,0 +1,22 @@
+# Zed Gnome
+
+> Build drum kits for the Teenage Engineering OP-Z in the browser: 24 sounds, 12 seconds, written straight to its disk.
+
+- A drum kit puts a sound on each key, for tracks 1 to 4. A synth sample mode makes one sound played at every key's pitch, for tracks 5 to 8.
+- Writing to the OP-Z needs Chrome or Edge, with the OP-Z in content mode (hold the track button while switching it on). The .aif can also be downloaded and copied by hand.
+- The keys can be played from a MIDI keyboard, or from the OP-Z over USB.
+
+## Page
+
+- [Zed Gnome](https://zedgnome.stephen8n.com/)
+
+## Source
+
+- [zedgnome](https://github.com/stephencummins/zedgnome)
+
+## Related
+
+- [Mic Gnome](https://micgnome.stephen8n.com/): a patch bay for the EP-2350 fx-mic
+- [Pad Gnome](https://padgnome.stephen8n.com/): samples onto a Roland SP-404SX card
+- [Sub Gnome](https://subgnome.stephen8n.com/): a sub-bass synth in the browser
+- [Drum Gnome](https://tdmdne.stephen8n.com/): invented drum machines
